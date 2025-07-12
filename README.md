@@ -1,16 +1,27 @@
-# Obsidian Sample Plugin
+# Obsidian VectorLink AI
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+**Obsidian VectorLink AI** is a plugin that connects your Obsidian vault to the new [OpenAI Response API](https://platform.openai.com/docs/guides/responses-vs-chat-completions) with full vector store integration.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+It allows you to:
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+- Automatically sync and embed your Markdown notes as vector representations,
+- Use the Response API to query your content with semantic precision,
+- Ask questions, summarize, or generate new notes using your own files as context,
+- Track which files were used in each answer with smart citations and metadata injection.
+
+With **VectorLink**, your Obsidian vault becomes a responsive and evolving knowledge graph – powered by OpenAI’s latest response engine.
+
+---
+
+## Features
+
+- Upload and embed your local notes into OpenAI's vector store
+- Query your notes contextually using the `response` endpoint
+- Generate or update notes dynamically with file-backed context
+- Store and visualize metadata (threads, citations, embeddings) within your vault
+- Clean and minimal chat interface integrated directly into Obsidian
+
+---
 
 ## First time developing plugins?
 
@@ -56,7 +67,8 @@ Quick starting guide for new plugin devs:
 - Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
 
 ## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
+
+- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code.
 - To use eslint with this project, make sure to install eslint from terminal:
   - `npm install -g eslint`
 - To use eslint to analyze this project use this command:
@@ -73,7 +85,7 @@ The simple way is to set the `fundingUrl` field to your link in your `manifest.j
 
 ```json
 {
-    "fundingUrl": "https://buymeacoffee.com"
+  "fundingUrl": "https://buymeacoffee.com"
 }
 ```
 
@@ -81,11 +93,11 @@ If you have multiple URLs, you can also do:
 
 ```json
 {
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
+  "fundingUrl": {
+    "Buy Me a Coffee": "https://buymeacoffee.com",
+    "GitHub Sponsor": "https://github.com/sponsors",
+    "Patreon": "https://www.patreon.com/"
+  }
 }
 ```
 
