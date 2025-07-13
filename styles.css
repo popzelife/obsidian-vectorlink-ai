@@ -6,3 +6,36 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+.markdown-decorator {
+  margin-block: 0;
+  white-space: normal;
+}
+.markdown-decorator h1,
+.markdown-decorator h2,
+.markdown-decorator h3,
+.markdown-decorator h4,
+.markdown-decorator h5,
+.markdown-decorator h6,
+.markdown-decorator ul,
+.markdown-decorator ol,
+.markdown-decorator li,
+.markdown-decorator p,
+.markdown-decorator pre,
+.markdown-decorator code,
+.markdown-decorator blockquote,
+.markdown-decorator table,
+.markdown-decorator thead,
+.markdown-decorator tbody,
+.markdown-decorator tr,
+.markdown-decorator td,
+.markdown-decorator th {
+  margin-block: 0;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  white-space: normal;
+  line-height: 1.5;
+}
+.markdown-decorator > * {
+  box-sizing: border-box;
+}
