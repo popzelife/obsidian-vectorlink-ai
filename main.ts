@@ -8,6 +8,11 @@ import {
   TFile,
 } from "obsidian";
 import OpenAI from "openai";
+import {
+  ResponseInput,
+  ResponsePrompt,
+  Tool,
+} from "openai/resources/responses/responses";
 import VectorLinkModal from "./src/Modal";
 import VectorLinkSettingTab, {
   DEFAULT_SETTINGS,
@@ -62,6 +67,56 @@ export default class VectorLinkPlugin extends Plugin {
     return { success: true, data };
   }
 
+  async generatePrompt(
+    prompt: ResponsePrompt,
+    userContent?: string,
+    inputs = [] as ResponseInput
+  ): Promise<string> {
+    if (!this.openaiClient) {
+      new Notice(
+        `${PLUGIN_NAME}\n❌ OpenAI client not configured. Please set your API key in settings.`
+      );
+      return "";
+    }
+
+    const tools: Tool[] = [];
+    if (this.settings.vectorStoreId) {
+      tools.push({
+        type: "file_search",
+        vector_store_ids: [this.settings.vectorStoreId],
+        // max_num_results: 20,
+      });
+    }
+
+    const notice = new Notice(`${PLUGIN_NAME}\nGenerating prompt`, 0);
+
+    try {
+      const response = await this.openaiClient.responses.create({
+        model: "gpt-4.1",
+        prompt,
+        tools,
+        tool_choice: "auto",
+        input: [
+          {
+            role: "developer",
+            content: `user content: ${userContent}`,
+          },
+          ...inputs,
+        ],
+      });
+
+      notice.hide();
+      new Notice(`${PLUGIN_NAME}\n✅ Prompt generated successfully!`);
+
+      return response.output_text;
+    } catch (error) {
+      console.error("Error generating prompt:", error);
+      notice.hide();
+      new Notice(`${PLUGIN_NAME}\n❌ Failed to generate prompt.`);
+      return "";
+    }
+  }
+
   async onload() {
     await this.loadSettings();
     this.updateOpenAIClient();
@@ -108,7 +163,7 @@ export default class VectorLinkPlugin extends Plugin {
     statusBarItemEl.onClickEvent(async () => {
       if (!this.openaiClient) {
         new Notice(
-          `${PLUGIN_NAME}\nOpenAI client not configured. Please set your API key in settings.`
+          `${PLUGIN_NAME}\n❌ OpenAI client not configured. Please set your API key in settings.`
         );
         return;
       }
@@ -349,11 +404,6 @@ export default class VectorLinkPlugin extends Plugin {
   onunload() {}
 
   async loadSettings() {
-    console.info(
-      "Loading settings for VectorLinkPlugin",
-      Object.assign({}, DEFAULT_SETTINGS, await this.loadData()),
-      await this.loadData()
-    );
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
 

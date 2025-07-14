@@ -1,4 +1,6 @@
 import { App, Modal, Setting } from "obsidian";
+import { CONVERSATION_PROMPT_ID, MAX_PROMPT_LENGTH } from "./SettingTab";
+import type VectorLinkPlugin from "main";
 
 export default class VectorLinkModal extends Modal {
   constructor(app: App) {
@@ -49,21 +51,109 @@ export class NewConversationModal extends Modal {
 }
 
 export class UpdateConversationModal extends Modal {
+  plugin: VectorLinkPlugin;
+  name: string;
+  id: string;
+  onSubmit: (name: string, prompt: string) => void;
+  prompt: string;
+  isLoading = false;
+
   constructor(
     app: App,
+    plugin: VectorLinkPlugin,
     defaultName: string,
-    onSubmit: (result: string) => void
+    defaultPrompt: string,
+    id: string,
+    onSubmit: (name: string, prompt: string) => void
   ) {
     super(app);
-    this.setTitle("Update conversation name:");
+    this.setTitle("Edit conversation:");
+    this.plugin = plugin;
 
-    let name = defaultName;
-    new Setting(this.contentEl).setName("Name").addText((text) => {
-      text.setValue(defaultName);
-      text.onChange((value) => {
-        name = value;
+    this.name = defaultName;
+    this.prompt = defaultPrompt;
+    this.id = id;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen(): void {
+    new Setting(this.contentEl)
+      .setName("Name")
+      .setDesc(
+        "Enter a name for the conversation. Default conversation cannot be renamed."
+      )
+      .addText((text) => {
+        text.setValue(this.name);
+        text.onChange((value) => {
+          this.name = value;
+        });
+        text.setDisabled(this.id === "default");
+        text.inputEl.setAttribute("style", "width: 250px;");
       });
-    });
+
+    new Setting(this.contentEl)
+      .setName("Prompt Conversation")
+      .setDesc(
+        `Add a custom prompt for the conversation. (Max ${MAX_PROMPT_LENGTH} characters)`
+      )
+      .addExtraButton((btn) =>
+        btn
+          .setIcon(this.isLoading ? "loader" : "sparkles")
+          .setTooltip("Generate Prompt with AI")
+          .setDisabled(this.isLoading)
+          .onClick(async () => {
+            this.isLoading = true;
+            this.refresh();
+            const newPrompt = await this.plugin.generatePrompt(
+              {
+                ...CONVERSATION_PROMPT_ID,
+                variables: {
+                  user_language: this.plugin.settings.language,
+                  vault_name: this.app.vault.getName(),
+                  conversation_name: this.name,
+                },
+              },
+              this.prompt || "",
+              [
+                {
+                  role: "developer",
+                  content: `project prompt: ${this.plugin.settings.prompt}`,
+                },
+              ]
+            );
+            this.isLoading = false;
+            this.refresh();
+            if (newPrompt) {
+              this.prompt = newPrompt;
+              this.refresh();
+            }
+          })
+          .extraSettingsEl.setAttribute("style", "height: 300px;")
+      )
+      .addTextArea((textArea) => {
+        textArea
+          .setPlaceholder("Enter your custom prompt here...")
+          .setDisabled(this.isLoading)
+          .setValue(this.prompt)
+          .onChange(async (value) => {
+            this.prompt = value;
+          })
+          .inputEl.setAttribute("style", "width: 250px; height: 300px;");
+
+        textArea.inputEl.setAttribute(
+          "maxlength",
+          MAX_PROMPT_LENGTH.toString()
+        );
+
+        return textArea.inputEl.addEventListener("input", () => {
+          if (textArea.inputEl.value.length > MAX_PROMPT_LENGTH) {
+            textArea.inputEl.value = textArea.inputEl.value.slice(
+              0,
+              MAX_PROMPT_LENGTH
+            );
+          }
+        });
+      });
 
     new Setting(this.contentEl).addButton((btn) =>
       btn
@@ -71,9 +161,18 @@ export class UpdateConversationModal extends Modal {
         .setCta()
         .onClick(() => {
           this.close();
-          onSubmit(name);
+          this.onSubmit(this.name, this.prompt);
         })
     );
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  refresh() {
+    this.contentEl.empty();
+    this.onOpen();
   }
 }
 
@@ -104,14 +203,11 @@ export class DeleteConversationModal extends Modal {
             onConfirm();
           })
       )
-      .addExtraButton((btn) =>
-        btn
-          .setIcon("cross")
-          .setTooltip("Cancel")
-          .onClick(() => {
-            this.close();
-            if (onCancel) onCancel();
-          })
+      .addButton((btn) =>
+        btn.setButtonText("Cancel").onClick(() => {
+          this.close();
+          if (onCancel) onCancel();
+        })
       );
   }
 }

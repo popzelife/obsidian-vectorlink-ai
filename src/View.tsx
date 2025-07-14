@@ -11,8 +11,9 @@ import {
   Tool,
   ResponseInputMessageItem,
 } from "openai/resources/responses/responses";
+import TextareaAutosize from "react-textarea-autosize";
 import { AppContext } from "./context";
-import { PLUGIN_NAME, SYSTEM_PROMPT } from "./SettingTab";
+import { PLUGIN_NAME, CHAT_PROMPT_ID } from "./SettingTab";
 import {
   NewConversationModal,
   DeleteConversationModal,
@@ -128,11 +129,13 @@ const MessageBubble = ({ item }: { item: ResponseItem }) => {
                 <div
                   key={i}
                   style={{
-                    border: "1px solid #b3b3b3",
+                    border: "1px solid var(--background-modifier-border)",
                     borderRadius: 6,
                     margin: "8px 0",
                     fontFamily: "var(--font-monospace)",
                     position: "relative",
+                    backgroundColor: "var(-background-primary)",
+                    overflow: "hidden",
                   }}
                 >
                   <div
@@ -141,8 +144,9 @@ const MessageBubble = ({ item }: { item: ResponseItem }) => {
                       padding: "8px",
                       alignItems: "center",
                       justifyContent: "space-between",
+                      backgroundColor: "var(--dropdown-background)",
                       borderBottom:
-                        "1px solid var(--background-modifier-border)",
+                        "1px solid var(--nav-item-background-active)",
                     }}
                   >
                     <span
@@ -168,12 +172,22 @@ const MessageBubble = ({ item }: { item: ResponseItem }) => {
                       onClick={() => navigator.clipboard.writeText(block.value)}
                       title="Copy markdown"
                     >
-                      📋
+                      <span
+                        dangerouslySetInnerHTML={{
+                          __html: getIcon("clipboard-copy")?.outerHTML || "",
+                        }}
+                        style={{
+                          display: "inline-flex",
+                          verticalAlign: "middle",
+                        }}
+                      />
                     </button>
                   </div>
                   <MarkdownDecorator
                     content={block.value}
-                    style={{ padding: "0 8px" }}
+                    style={{
+                      padding: "0 8px",
+                    }}
                   />
                 </div>
               ) : (
@@ -190,8 +204,10 @@ const MessageBubble = ({ item }: { item: ResponseItem }) => {
           background: "none",
           border: "none",
           color: "var(--text-faint)",
+          cursor: "pointer",
           fontSize: 14,
           verticalAlign: "middle",
+          boxShadow: "none",
           padding: "5px",
           opacity: hover ? 1 : 0,
           transition: "opacity 0.5s ease",
@@ -201,7 +217,12 @@ const MessageBubble = ({ item }: { item: ResponseItem }) => {
         }}
         title="Copy to clipboard"
       >
-        📋
+        <span
+          dangerouslySetInnerHTML={{
+            __html: getIcon("clipboard-copy")?.outerHTML || "",
+          }}
+          style={{ display: "inline-flex", verticalAlign: "middle" }}
+        />
       </button>
     </div>
   );
@@ -217,11 +238,13 @@ const VectorLinkReactView = () => {
 
   const [messages, setMessages] = useState<ResponseItem[]>([]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [thinking, setThinking] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   // Track the latest requested conversation ID to avoid race conditions
   const latestConversationId = useRef<string | null>(null);
+
+  const loading = loadingHistory || thinking;
 
   // Load previous conversation items (optional, can be triggered by a button)
   const loadHistory = async () => {
@@ -304,7 +327,7 @@ const VectorLinkReactView = () => {
     const lastResponseId = plugin.settings.conversations[index]?.lastResponseId;
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
-    setLoading(true);
+    setThinking(true);
 
     try {
       // Use the OpenAI responses API with file tool and vector store
@@ -320,19 +343,25 @@ const VectorLinkReactView = () => {
       }
 
       // Always prepend system prompt for now (could be optimized to only do it once per conversation)
-      const inputMessages = [SYSTEM_PROMPT, userMessage].map((msg) => ({
+      const inputMessages = [userMessage].map((msg) => ({
         role: msg.role,
         content: msg.content,
       }));
 
-      // find the previous response ID if it exists before last response
-
       const response = await plugin.openaiClient.responses.create({
-        model: "gpt-4o",
+        model: "gpt-4.1",
+        prompt: {
+          ...CHAT_PROMPT_ID,
+          variables: {
+            user_language: plugin.settings.language,
+            general_prompt: plugin.settings.prompt || "",
+            specific_prompt: plugin.settings.conversations[index].prompt || "",
+          },
+        },
         input: inputMessages,
-        tools: tools.length > 0 ? tools : undefined,
+        tools,
         tool_choice: tools.length > 0 ? "required" : undefined,
-        // include: ["file_search_call.results"],
+        include: ["file_search_call.results"],
         stream: false,
         store: true,
         previous_response_id: lastResponseId || undefined,
@@ -395,7 +424,7 @@ const VectorLinkReactView = () => {
         },
       ]);
     } finally {
-      setLoading(false);
+      setThinking(false);
       inputRef.current?.focus();
     }
   };
@@ -414,20 +443,22 @@ const VectorLinkReactView = () => {
     await loadHistory();
   };
 
-  const updateConversationName = async (newName: string) => {
+  const updateConversation = async (newName: string, newPrompt: string) => {
     const index = plugin.settings.conversations.findIndex(
       (e) => e.id === plugin.settings.selectedConversation
     );
     if (index !== -1) {
       plugin.settings.conversations[index].name = newName;
+      plugin.settings.conversations[index].prompt = newPrompt;
       plugin.saveSettings();
-      await loadHistory();
+      // Simple hack to update the messages state to reflect the new name
+      setMessages((prev) => prev);
     }
   };
 
   const deleteConversation = async (id: string) => {
     if (id === "default") {
-      new Notice(`${PLUGIN_NAME}\n❌ Cannot delete the default conversation`);
+      new Notice(`${PLUGIN_NAME}\nCannot delete the default conversation`);
       return;
     }
 
@@ -505,16 +536,25 @@ const VectorLinkReactView = () => {
         </button>
         <button
           onClick={() => {
-            const prevName =
-              plugin.settings.conversations.find(
-                (e) => e.id === plugin.settings.selectedConversation
-              )?.name || "";
-            new UpdateConversationModal(context.app, prevName, (newName) => {
-              if (newName) updateConversationName(newName);
-            }).open();
+            const conv = plugin.settings.conversations.find(
+              (e) => e.id === plugin.settings.selectedConversation
+            );
+            if (!conv) {
+              new Notice(`${PLUGIN_NAME}\n❌ Conversation not found`);
+              return;
+            }
+            new UpdateConversationModal(
+              context.app,
+              context.plugin,
+              conv.name,
+              conv.prompt || "",
+              conv.id,
+              (newName, newPrompt) => {
+                updateConversation(newName, newPrompt);
+              }
+            ).open();
           }}
-          title="Update Name"
-          disabled={plugin.settings.selectedConversation === "default"}
+          title="Edit Conversation"
           style={{
             padding: "6px 12px",
             borderRadius: 6,
@@ -582,7 +622,7 @@ const VectorLinkReactView = () => {
             {messages.map((msg, i) => (
               <MessageBubble key={i} item={msg} />
             ))}
-            {loading && (
+            {thinking && (
               <div
                 style={{
                   color: "var(--text-faint)",
@@ -607,25 +647,26 @@ const VectorLinkReactView = () => {
           sendMessage();
         }}
       >
-        <input
+        <TextareaAutosize
           ref={inputRef}
-          type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask a question..."
+          placeholder="Message to VectorLink Assistant..."
+          maxRows={15}
           style={{
             flex: 1,
             marginRight: 8,
             padding: 8,
             borderRadius: 6,
             border: "1px solid var(--background-modifier-border)",
+            resize: "none",
           }}
           disabled={loading}
         />
         <button
           type="submit"
           disabled={loading || !input.trim()}
-          style={{ padding: "8px 16px", borderRadius: 6 }}
+          style={{ padding: "8px 16px", borderRadius: 6, height: "100%" }}
         >
           Send
         </button>
@@ -671,7 +712,7 @@ export default class VectorLinkView extends ItemView {
 const PluginNotInitialized = () => {
   return (
     <div style={{ padding: 16, color: "var(--text-faint)" }}>
-      Plugin not initialized. Please check your settings.
+      ❌ Plugin not initialized. Please check your settings.
     </div>
   );
 };
