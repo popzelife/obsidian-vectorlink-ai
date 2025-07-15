@@ -6,6 +6,7 @@ import {
   MarkdownView,
   Plugin,
   TFile,
+  FileView,
 } from "obsidian";
 import OpenAI from "openai";
 import {
@@ -65,6 +66,16 @@ export default class VectorLinkPlugin extends Plugin {
 
     new Notice(`${PLUGIN_NAME}\n✅ Added new file: ${filePath}`);
     return { success: true, data };
+  }
+
+  getActiveMarkdownLeaves() {
+    const leaves = this.app.workspace.getLeavesOfType("markdown");
+
+    return leaves.filter(
+      (l) => l.view instanceof FileView
+    ) as (WorkspaceLeaf & {
+      view: FileView;
+    })[];
   }
 
   async generatePrompt(

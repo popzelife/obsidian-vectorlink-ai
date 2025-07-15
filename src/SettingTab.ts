@@ -43,7 +43,7 @@ export const PLUGIN_NAME = "🌌 VectorLink AI Plugin";
 
 export const CHAT_PROMPT_ID: ResponsePrompt = {
   id: "pmpt_687504553a608197ac374e6c850a400c07bf6ae19ef1a3f8",
-  version: "2",
+  version: "3",
 };
 
 export const PROJECT_PROMPT_ID: ResponsePrompt = {
