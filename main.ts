@@ -14,6 +14,7 @@ import {
   ResponsePrompt,
   Tool,
 } from "openai/resources/responses/responses";
+import { throttle } from "lodash";
 import VectorLinkModal from "./src/Modal";
 import VectorLinkSettingTab, {
   DEFAULT_SETTINGS,
@@ -25,6 +26,10 @@ import VectorLinkView, { VIEW_TYPE_VECTOR_LINK } from "./src/View";
 export default class VectorLinkPlugin extends Plugin {
   settings: VectorLinkSettings;
   openaiClient: OpenAI | null = null;
+  throttleSelectionChangeEvent = throttle(
+    this.selectionChangeEvent.bind(this),
+    100
+  );
 
   async createFileInVectorStore(file: TFile): Promise<{
     success: boolean;
@@ -68,14 +73,48 @@ export default class VectorLinkPlugin extends Plugin {
     return { success: true, data };
   }
 
-  getActiveMarkdownLeaves() {
-    const leaves = this.app.workspace.getLeavesOfType("markdown");
+  selectionChangeEvent(event: Event) {
+    const selection = document.getSelection();
+    if (!selection) return;
 
-    return leaves.filter(
+    // check if parent element is a markdown editor
+    const isMarkdownEditor = selection.anchorNode?.parentElement?.closest(
+      ".markdown-source-view"
+    );
+
+    if (!isMarkdownEditor) return;
+
+    // Retrieve editor and get obsidian selection
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+
+    // Attach the selection to an event
+    this.app.workspace.trigger(
+      "plugin-editor-selection-change",
+      selection,
+      activeView
+    );
+  }
+
+  getActiveEditor() {
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    return activeView?.editor || null;
+  }
+
+  getMarkdownLeaves() {
+    const leaves = this.app.workspace.getLeavesOfType("markdown");
+    const markdownLeaves = leaves.filter(
       (l) => l.view instanceof FileView
     ) as (WorkspaceLeaf & {
       view: FileView;
     })[];
+
+    return markdownLeaves;
+  }
+
+  getLeafForFile(file: TFile | null): WorkspaceLeaf | null {
+    if (!file) return null;
+    const leaves = this.getMarkdownLeaves();
+    return leaves.find((l) => l.view.file?.path === file.path) || null;
   }
 
   async generatePrompt(
@@ -135,6 +174,11 @@ export default class VectorLinkPlugin extends Plugin {
     this.registerView(
       VIEW_TYPE_VECTOR_LINK,
       (leaf) => new VectorLinkView(leaf, this)
+    );
+
+    document.addEventListener(
+      "selectionchange",
+      this.throttleSelectionChangeEvent
     );
 
     addIcon(
@@ -412,7 +456,13 @@ export default class VectorLinkPlugin extends Plugin {
     // );
   }
 
-  onunload() {}
+  onunload() {
+    // events
+    document.removeEventListener(
+      "selectionchange",
+      this.throttleSelectionChangeEvent
+    );
+  }
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());

@@ -1,7 +1,8 @@
 import { useRef, useState, useEffect } from "react";
-import { Notice, TFile } from "obsidian";
+import { EditorSelection, Notice } from "obsidian";
 import { Tool } from "openai/resources/responses/responses";
 import TextareaAutosize from "react-textarea-autosize";
+import { EditorSelectionChange } from "obsidian-augment";
 import { useApp } from "../context";
 import { PLUGIN_NAME, CHAT_PROMPT_ID } from "../SettingTab";
 import {
@@ -9,18 +10,26 @@ import {
   DeleteConversationModal,
   UpdateConversationModal,
 } from "../Modal";
-import { Icon, MessageBubble, FileReference } from "../components";
+import {
+  Icon,
+  MessageBubble,
+  FileReference,
+  FileWithSelection,
+} from "../components";
 import type { ResponseItem } from "../types";
 
 export const AssistantChatView = () => {
   const { plugin, app } = useApp();
 
-  const [suggestedFile, setSuggestedFile] = useState<TFile | null>(
-    plugin.getActiveMarkdownLeaves()[0]?.view.file || null
+  const [suggestedFile, setSuggestedFile] = useState<FileWithSelection | null>(
+    app.workspace.getActiveFile()
   );
-  const [contextFiles, setContextFiles] = useState<TFile[]>([]);
 
-  const [messages, setMessages] = useState<ResponseItem[]>([]);
+  const [contextFiles, setContextFiles] = useState<FileWithSelection[]>([]);
+
+  const [messages, setMessages] = useState<Map<string, ResponseItem>>(
+    new Map<string, ResponseItem>()
+  );
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -39,22 +48,83 @@ export const AssistantChatView = () => {
 
     return () => {
       app.workspace.offref(eventFileOpen);
-      setSuggestedFile(null);
     };
-  }, [app.workspace]);
+  }, []);
+
+  const prevSelectionRef = useRef<EditorSelection | undefined>(undefined);
+
+  useEffect(() => {
+    const onEditorSelectionChange: EditorSelectionChange = (
+      selection,
+      view
+    ) => {
+      const range = view?.editor.listSelections()?.[0];
+      // Only update if selection actually changed
+      if (
+        !prevSelectionRef.current ||
+        JSON.stringify(prevSelectionRef.current) !== JSON.stringify(range)
+      ) {
+        setSuggestedFile((prev) => {
+          if (!range) return prev;
+          if (prev) {
+            return {
+              ...prev,
+              range,
+              selection:
+                view?.editor.getRange(range.anchor, range.head) ||
+                view?.editor.getRange(range.head, range.anchor),
+              offset: [
+                view?.editor.posToOffset(range.anchor),
+                view?.editor.posToOffset(range.head),
+              ].sort((a, b) => a - b) as [number, number],
+            };
+          }
+          return prev;
+        });
+        prevSelectionRef.current = range;
+      }
+    };
+
+    const offSelection = app.workspace.on(
+      // @ts-ignore
+      "plugin-editor-selection-change",
+      onEditorSelectionChange
+    );
+
+    return () => {
+      app.workspace.offref(offSelection);
+    };
+  }, []);
 
   // Load previous conversation items
-  const loadHistory = async () => {
-    setMessages([]);
-    if (!plugin.openaiClient) return;
+  // Use an AbortController to cancel previous loadHistory calls
+  const loadHistoryAbortController = useRef<AbortController | null>(null);
 
+  const loadHistory = async () => {
+    if (!plugin.openaiClient) return;
+    console.info("Loading conversation history...");
+
+    // Abort any previous loadHistory in progress
+    if (loadHistoryAbortController.current) {
+      loadHistoryAbortController.current.abort();
+    }
+    const abortController = new AbortController();
+    loadHistoryAbortController.current = abortController;
+
+    // If the latest conversation ID has changed, reset messages
+    if (latestConversationId.current !== plugin.settings.selectedConversation) {
+      setMessages(new Map<string, ResponseItem>());
+    }
     const selectedConversationId = plugin.settings.selectedConversation;
     latestConversationId.current = selectedConversationId;
+
+    // If no conversation is selected, do nothing
     const selectedConversation = plugin.settings.conversations.find(
       (e) => e.id === selectedConversationId
     );
     if (!selectedConversation) return;
 
+    // Start loading history messages
     setLoadingHistory(true);
     try {
       let previousResponseId: string | null =
@@ -62,11 +132,10 @@ export const AssistantChatView = () => {
       let count = 0;
       const MAX_HISTORY = 20; // Limit to 20 message pairs
 
-      while (
-        previousResponseId &&
-        count < MAX_HISTORY &&
-        latestConversationId.current === selectedConversationId
-      ) {
+      while (previousResponseId && count < MAX_HISTORY) {
+        // Check for abort signal
+        if (abortController.signal.aborted) break;
+
         // Fetch response and input in parallel
         const [response, input] = await Promise.all([
           plugin.openaiClient.responses.retrieve(previousResponseId, {
@@ -87,40 +156,51 @@ export const AssistantChatView = () => {
           null;
 
         // Only update state if this is still the latest requested conversation
-        if (latestConversationId.current === selectedConversationId) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              content: response.output_text,
-              role: outputMsg?.role || "assistant",
-              type: "response_item",
-              previous_response_id: response.previous_response_id || null,
-              annotations,
-              file_results,
-            },
-            {
-              content:
-                (inputMsg &&
-                  "content" in inputMsg &&
-                  inputMsg.content.find((c) => c.type === "input_text")
-                    ?.text) ||
-                "",
-              role: (inputMsg && "role" in inputMsg && inputMsg.role) || "user",
-              type: "input_item",
-            },
-          ]);
+        if (
+          latestConversationId.current === selectedConversationId &&
+          !abortController.signal.aborted
+        ) {
+          setMessages((prev) => {
+            // Store messages in the map with responseId as key
+            prev
+              .set(response.id, {
+                content: response.output_text,
+                role: outputMsg?.role || "assistant",
+                type: "response_item",
+                previous_response_id: response.previous_response_id || null,
+                annotations,
+                file_results,
+              })
+              .set(`input-${response.id}`, {
+                content:
+                  (inputMsg &&
+                    "content" in inputMsg &&
+                    inputMsg.content.find((c) => c.type === "input_text")
+                      ?.text) ||
+                  "",
+                role:
+                  (inputMsg && "role" in inputMsg && inputMsg.role) || "user",
+                type: "input_item",
+              });
+            return new Map(prev);
+          });
         }
 
         previousResponseId = response.previous_response_id || null;
         count++;
       }
     } catch (err) {
-      new Notice(`${PLUGIN_NAME}\n❌ Failed to load conversation history`);
-      console.error("Failed to load history:", err);
+      if (!abortController.signal.aborted) {
+        new Notice(`${PLUGIN_NAME}\n❌ Failed to load conversation history`);
+        console.error("Failed to load history:", err);
+      }
     }
 
     // Only update state if this is still the latest requested conversation
-    if (latestConversationId.current === selectedConversationId) {
+    if (
+      latestConversationId.current === selectedConversationId &&
+      !abortController.signal.aborted
+    ) {
       setLoadingHistory(false);
     }
   };
@@ -142,7 +222,10 @@ export const AssistantChatView = () => {
       type: "input_item",
     };
     const lastResponseId = plugin.settings.conversations[index]?.lastResponseId;
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => {
+      prev.set(`input-${lastResponseId}`, userMessage);
+      return new Map(prev);
+    });
     setInput("");
     setThinking(true);
 
@@ -215,15 +298,15 @@ export const AssistantChatView = () => {
       //   }
       // }
 
-      setMessages((prev) => [
-        ...prev,
-        {
+      setMessages((prev) => {
+        prev.set(response.id, {
           role: "assistant",
           content: assistantMessage,
           type: "response_item",
           previous_response_id: response.previous_response_id || null,
-        },
-      ]);
+        });
+        return new Map(prev);
+      });
 
       // Update the last response ID in settings
       if (index !== -1) {
@@ -231,15 +314,15 @@ export const AssistantChatView = () => {
         plugin.saveSettings();
       }
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
+      setMessages((prev) => {
+        prev.set(`error-${lastResponseId}`, {
           role: "assistant",
           content: "Error: " + (err?.message || err),
           type: "response_item",
           previous_response_id: lastResponseId || null,
-        },
-      ]);
+        });
+        return new Map(prev);
+      });
     } finally {
       setThinking(false);
       inputRef.current?.focus();
@@ -269,7 +352,7 @@ export const AssistantChatView = () => {
       plugin.settings.conversations[index].prompt = newPrompt;
       plugin.saveSettings();
       // Simple hack to update the messages state to reflect the new name
-      setMessages((prev) => prev);
+      setMessages((prev) => new Map(prev));
     }
   };
 
@@ -313,7 +396,6 @@ export const AssistantChatView = () => {
           onChange={(e) => {
             plugin.settings.selectedConversation = e.target.value;
             plugin.saveSettings();
-            setMessages([]);
             loadHistory();
           }}
           style={{
@@ -416,7 +498,7 @@ export const AssistantChatView = () => {
             Thinking...
           </div>
         )}
-        {messages.length === 0 && (
+        {messages.size === 0 && (
           <div
             style={{
               color: "var(--text-faint)",
@@ -427,8 +509,8 @@ export const AssistantChatView = () => {
             Ask anything about your notes or knowledge base!
           </div>
         )}
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} item={msg} />
+        {[...messages].map(([id, msg]) => (
+          <MessageBubble key={id} item={msg} />
         ))}
         {loadingHistory && (
           <div style={{ textAlign: "center", color: "var(--text-faint)" }}>
@@ -453,7 +535,6 @@ export const AssistantChatView = () => {
         <div
           style={{
             display: "flex",
-            flex: 2,
             flexDirection: "row",
             gap: 4,
             flexWrap: "wrap",
@@ -470,24 +551,49 @@ export const AssistantChatView = () => {
                     return prev.filter((f) => f.path !== file.path);
                   });
                 }}
+                appendName={
+                  cFile.selection && cFile.offset
+                    ? `${cFile.offset[0]} - ${cFile.offset[1]}`
+                    : undefined
+                }
                 title={`Remove "${cFile.name}" as context`}
-                style={{ flex: 1, maxWidth: "50%" }}
+                style={{
+                  border: "2px dashed transparent",
+                  maxWidth: "calc(50% - 4px)",
+                }}
               />
             );
           })}
           {!!suggestedFile &&
-            !contextFiles.find((el) => el.path === suggestedFile.path) && (
+            !contextFiles.find(
+              (el) =>
+                el.path === suggestedFile.path &&
+                (el.selection === suggestedFile.selection ||
+                  // suggestedFile offset is inside contextFiles offset
+                  (el.offset &&
+                    suggestedFile.offset &&
+                    // ...
+                    suggestedFile.offset[0] >= el.offset[0] &&
+                    suggestedFile.offset[0] <= el.offset[1] &&
+                    // ...
+                    suggestedFile.offset[1] <= el.offset[1] &&
+                    suggestedFile.offset[1] >= el.offset[0]))
+            ) && (
               <FileReference
                 file={suggestedFile}
                 onClick={(file) => {
                   setContextFiles((prev) => [...prev, file]);
                 }}
+                appendName={
+                  suggestedFile.selection && suggestedFile.offset
+                    ? `${suggestedFile.offset[0]} - ${suggestedFile.offset[1]}`
+                    : undefined
+                }
                 title={`Add "${suggestedFile.name}" as context`}
                 style={{
                   border: "2px dashed var(--background-modifier-border)",
                   background: "none",
-                  flex: 1,
-                  maxWidth: "50%",
+                  maxWidth: "calc(50% - 4px)",
                 }}
               />
             )}

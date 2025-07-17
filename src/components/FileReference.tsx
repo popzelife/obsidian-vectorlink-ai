@@ -1,19 +1,32 @@
-import { TFile, FileView, WorkspaceLeaf, MarkdownView } from "obsidian";
+import {
+  TFile,
+  EditorSelection,
+  FileView,
+  WorkspaceLeaf,
+  MarkdownView,
+} from "obsidian";
 import { Icon } from "./Icon";
 import { useApp } from "../context";
+
+export type FileWithSelection = TFile & {
+  range?: EditorSelection;
+  offset?: [number, number];
+  selection?: string;
+};
 
 export const FileReference = ({
   file,
   title,
   onClick,
   onOpenClick,
+  icon,
   appendName = "",
   style = {},
 }: {
-  file: TFile;
-  onClick?: (file: TFile) => void;
+  file: FileWithSelection;
+  onClick?: (file: FileWithSelection) => void;
   onOpenClick?: (
-    file: TFile,
+    file: FileWithSelection,
     leaf: WorkspaceLeaf & {
       view: MarkdownView;
     }
@@ -21,6 +34,7 @@ export const FileReference = ({
   title?: string;
   appendName?: string;
   style?: React.CSSProperties;
+  icon?: React.ReactNode;
 }) => {
   const { app } = useApp();
 
@@ -52,20 +66,11 @@ export const FileReference = ({
 
   return (
     <div
+      className={`file-reference ${onClick ? "clickable" : ""}`}
       style={{
-        fontSize: 12,
-        padding: "0px 8px",
-        borderRadius: 20,
-        border: "none",
-        background: "var(--background-secondary-alt)",
-        color: "var(--text-normal)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 8,
         ...style,
       }}
-      title={title}
+      title={title ?? `${file.basename}${appendName}`}
       onClick={(e) => {
         onClick?.(file);
       }}
@@ -77,6 +82,7 @@ export const FileReference = ({
           padding: "4px",
           margin: "-4px 0",
         }}
+        title="Open file in tab"
         onClick={(e) => {
           openFileInTab(e).then((leaf) => {
             onOpenClick?.(file, leaf);
@@ -86,7 +92,6 @@ export const FileReference = ({
         <Icon name="panel-right-open" />
       </button>
       <span
-        title={`${file.basename}${appendName}`}
         style={{
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -94,16 +99,18 @@ export const FileReference = ({
         }}
       >
         {file.basename}
-        {appendName && (
-          <span
-            style={{
-              color: "var(--text-muted)",
-            }}
-          >
-            {appendName}
-          </span>
-        )}
       </span>
+      {appendName && (
+        <span
+          style={{
+            whiteSpace: "nowrap",
+            color: "var(--text-muted)",
+          }}
+        >
+          {appendName}
+        </span>
+      )}
+      {icon}
     </div>
   );
 };

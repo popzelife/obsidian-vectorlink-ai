@@ -1,141 +1,101 @@
-import { useState, useMemo, useEffect } from "react";
-import {
-  ResponseFileSearchToolCall,
-  ResponseOutputText,
-} from "openai/resources/responses/responses";
+import { useState, useMemo } from "react";
+import { ResponseOutputText } from "openai/resources/responses/responses";
 import { MarkdownDecorator } from "./MarkdownDecorator";
+import { AnnotationHandler } from "./AnnotationHandler";
 import { Icon } from "./Icon";
-import { FileReference } from "./FileReference";
 import { useApp } from "../context";
-import type { ResponseItem } from "../types";
-import { TFile } from "obsidian";
-
-type EnrichedChunk =
-  | {
-      type: "markdown" | "text";
-      value: string;
-    }
-  | {
-      type: "citation";
-      citation: ResponseOutputText.FileCitation;
-      fileResults: ResponseFileSearchToolCall.Result[] | null | undefined;
-    };
-
-const AnnotationHandler = ({
-  annotation,
-  fileResults,
-}: {
-  annotation: ResponseOutputText.FileCitation;
-  fileResults: ResponseFileSearchToolCall.Result[] | null | undefined;
-}) => {
-  const { app } = useApp();
-
-  const getFileCitation = () => {
-    const file = fileResults?.find((f) => f.file_id === annotation.file_id);
-
-    return {
-      ...file,
-      file_id: annotation.file_id,
-      filename: file?.filename || annotation.filename,
-      index: annotation.index,
-    };
-  };
-
-  const [file, setFile] = useState<TFile>({
-    basename: annotation.filename.split(".")[0] || "",
-    extension: annotation.filename.split(".").pop() || "",
-    stat: {
-      ctime: -1,
-      mtime: -1,
-      size: -1,
-    },
-    vault: app.vault,
-    path: "",
-    name: annotation.filename,
-    parent: null,
-  });
-
-  useEffect(() => {
-    const file = getFileCitation();
-
-    const path =
-      typeof file.attributes?.name === "string" ? file.attributes.name : null;
-    if (!path) return;
-    const tFile = app.vault.getFileByPath(path);
-    if (tFile) setFile(tFile);
-  }, []);
-
-  return (
-    <FileReference
-      file={file}
-      style={{ fontSize: 12, color: "var(--text-muted)" }}
-      title={file.path}
-      appendName={` ${annotation.index} - ${annotation.index + 100}`}
-      // onClick={(file) => {
-      //   // Handle file click if needed
-      // }}
-      onOpenClick={(file, leaf) => {
-        leaf.view.editor.setCursor(annotation.index);
-      }}
-    />
-  );
-};
-
-// Helper: extract :::gpt-markdown blocks
-const parseGptMarkdown = (content: string) => {
-  const regex = /:::gpt-markdown[\r\n]+([\s\S]*?)\n?:::/g;
-  let lastIndex = 0;
-  const result: Array<{ type: "markdown" | "text"; value: string }> = [];
-  let match;
-  while ((match = regex.exec(content)) !== null) {
-    if (match.index > lastIndex) {
-      result.push({
-        type: "text",
-        value: content.slice(lastIndex, match.index),
-      });
-    }
-    result.push({ type: "markdown", value: match[1] });
-    lastIndex = regex.lastIndex;
-  }
-  if (lastIndex < content.length) {
-    result.push({ type: "text", value: content.slice(lastIndex) });
-  }
-  return result;
-};
+import type { ResponseItem, EnrichedChunk } from "../types";
 
 // Helper: enrich text with citations
 const enrichTextWithCitations = (
-  item: ResponseItem,
-  annotations: ResponseOutputText.FileCitation[]
+  chunk: Extract<EnrichedChunk, { type: "markdown" | "text" }>,
+  annotations: ResponseOutputText.FileCitation[],
+  item: ResponseItem
 ) => {
   const chunks: EnrichedChunk[] = [];
+  let relStart = 0; // relative to chunk.value
+  const chunkAbsStart = chunk.indexStart ?? 0;
+  const chunkAbsEnd = chunk.indexEnd ?? chunkAbsStart + chunk.value.length;
 
-  let lastIndex = 0;
-  for (let i = 0; i < annotations.length; i++) {
-    const a = annotations[i];
-    // Find the end of the sentence after a.index
-    let endIndex = a.index;
-    const sentenceEndRegex = /[.!?](?:\s|$)/g;
-    sentenceEndRegex.lastIndex = endIndex;
-    const match = sentenceEndRegex.exec(item.content);
-    if (match) {
-      endIndex = sentenceEndRegex.lastIndex;
+  // Filter annotations that are within this chunk's range
+  const relevantAnnotations = annotations
+    .filter((a) => a.index >= chunkAbsStart && a.index < chunkAbsEnd)
+    .sort((a, b) => a.index - b.index);
+
+  // let lastAbs = chunkAbsStart;
+  for (let i = 0; i < relevantAnnotations.length; i++) {
+    const a = relevantAnnotations[i];
+    const relIndex = a.index - chunkAbsStart;
+    // Add text before the citation
+    if (relIndex > relStart) {
+      chunks.push({
+        type: "text",
+        value: chunk.value.slice(relStart, relIndex),
+        indexStart: chunkAbsStart + relStart,
+        indexEnd: chunkAbsStart + relIndex,
+      });
     }
-    const value = item.content.slice(lastIndex, endIndex);
-    const parsed = parseGptMarkdown(value);
-    chunks.push(...parsed);
+    // Add the citation chunk
     chunks.push({
       type: "citation",
       citation: a,
-      fileResults: item.file_results,
+      fileResults: item.file_results, // file_results should be on the annotation
+      index: a.index,
     });
-
-    lastIndex = endIndex;
+    relStart = relIndex;
+    // lastAbs = a.index;
   }
-
-  const lastParsed = parseGptMarkdown(item.content.slice(lastIndex));
-  chunks.push(...lastParsed);
+  // Add any remaining text after the last citation
+  if (relStart < chunk.value.length) {
+    chunks.push({
+      type: "text",
+      value: chunk.value.slice(relStart),
+      indexStart: chunkAbsStart + relStart,
+      indexEnd: chunkAbsEnd,
+    });
+  }
   return chunks;
+};
+
+// Helper: extract :::gpt-markdown blocks
+const parseGptMarkdown = (
+  item: ResponseItem,
+  annotations: ResponseOutputText.FileCitation[]
+) => {
+  const regex = /:::gpt-markdown[\r\n]+([\s\S]*?)\n?:::/g;
+  let lastIndex = 0;
+  const result: EnrichedChunk[] = [];
+  let match;
+  while ((match = regex.exec(item.content)) !== null) {
+    if (match.index > lastIndex) {
+      const textChunk: EnrichedChunk = {
+        type: "text",
+        value: item.content.slice(lastIndex, match.index),
+        indexStart: lastIndex,
+        indexEnd: match.index,
+      };
+
+      const newChunks = enrichTextWithCitations(textChunk, annotations, item);
+
+      result.push(...newChunks);
+    }
+    result.push({
+      type: "markdown",
+      value: match[1],
+      indexStart: match.index,
+      indexEnd: regex.lastIndex,
+    });
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < item.content.length) {
+    result.push({
+      type: "text",
+      value: item.content.slice(lastIndex),
+      indexStart: lastIndex,
+      indexEnd: item.content.length,
+    });
+  }
+  return result;
 };
 
 export const MessageBubble = ({ item }: { item: ResponseItem }) => {
@@ -157,15 +117,9 @@ export const MessageBubble = ({ item }: { item: ResponseItem }) => {
   }, [item.annotations, app.vault]);
 
   const parsed = useMemo(
-    () => enrichTextWithCitations(item, annotations),
+    () => parseGptMarkdown(item, annotations),
     [item.content, annotations]
   );
-
-  console.info("MessageBubble", {
-    item,
-    parsed,
-    annotations,
-  });
 
   return (
     <div
@@ -222,8 +176,28 @@ export const MessageBubble = ({ item }: { item: ResponseItem }) => {
                     margin: "8px 0",
                     fontFamily: "var(--font-monospace)",
                     position: "relative",
-                    backgroundColor: "var(-background-primary)",
+                    backgroundColor: "var(--background-primary)",
                     overflow: "hidden",
+                  }}
+                  onClick={(e) => {
+                    // check right click
+                    if (e.button === 3) {
+                      // open context menu
+                      e.preventDefault();
+                      app.workspace.trigger(
+                        "context-menu",
+                        e,
+                        {
+                          type: "markdown",
+                          value: block.value,
+                        },
+                        {
+                          onCopy: () => {
+                            navigator.clipboard.writeText(block.value);
+                          },
+                        }
+                      );
+                    }
                   }}
                 >
                   <div

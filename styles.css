@@ -7,6 +7,24 @@ If your plugin does not need CSS, delete this file.
 
 */
 
+.file-reference {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 20px;
+  border: none;
+  background: var(--background-secondary-alt);
+  color: var(--text-normal);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  gap: 4px;
+  user-select: none;
+}
+.file-reference.clickable:hover {
+  background-color: var(--interactive-hover);
+  box-shadow: var(--input-shadow-hover);
+}
+
 .markdown-decorator {
   margin-block: 0;
   white-space: normal;
@@ -30,9 +48,8 @@ If your plugin does not need CSS, delete this file.
 .markdown-decorator tr,
 .markdown-decorator td,
 .markdown-decorator th {
-  margin-block: 0;
-  margin-top: 1rem;
-  margin-bottom: 1rem;
+  margin-block: 0.5rem;
+  margin-inline: 0.5rem;
   white-space: normal;
   line-height: 1.5;
 }

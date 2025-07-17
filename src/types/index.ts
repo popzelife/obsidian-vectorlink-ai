@@ -18,3 +18,17 @@ export interface ResponseItem {
   annotations?: Annotations | null;
   file_results?: ResponseFileSearchToolCall.Result[] | null;
 }
+
+export type EnrichedChunk =
+  | {
+      type: "markdown" | "text";
+      value: string;
+      indexStart: number;
+      indexEnd: number;
+    }
+  | {
+      type: "citation";
+      citation: ResponseOutputText.FileCitation;
+      fileResults: ResponseFileSearchToolCall.Result[] | null | undefined;
+      index: number;
+    };
