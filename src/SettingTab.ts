@@ -41,8 +41,28 @@ export interface VectorLinkSettings {
 
 export const PLUGIN_NAME = "🌌 VectorLink AI Plugin";
 
-export const CHAT_PROMPT_ID: ResponsePrompt = {
+export const CHAT_CREATE_PROMPT_ID: ResponsePrompt = {
   id: "pmpt_687504553a608197ac374e6c850a400c07bf6ae19ef1a3f8",
+  version: "4",
+};
+
+export const CHAT_EDIT_PROMPT_ID: ResponsePrompt = {
+  id: "pmpt_688fdb0c6ccc8197b2b6a90d9a4b132404137e1172909187",
+  version: "2",
+};
+
+export const CHAT_WRITE_PROMPT_ID: ResponsePrompt = {
+  id: "pmpt_688fdb4c2fe08195a228335af9e2e0320148783483da4ae1",
+  version: "2",
+};
+
+export const CHAT_ASK_PROMPT_ID: ResponsePrompt = {
+  id: "pmpt_688fdb9cabc88195a54a89e42dabbba80fcbee71d3ae7645",
+  version: "3",
+};
+
+export const CHAT_SEARCH_PROMPT_ID: ResponsePrompt = {
+  id: "pmpt_688fdbc3c6288197bd79412f2de597c40a0f67ea7219f26f",
   version: "3",
 };
 
@@ -263,19 +283,33 @@ export default class VectorLinkSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button
           .setTooltip("Delete Conversation")
-          .setDisabled(this.selectedConversation === "default")
           .setIcon("trash")
           .setWarning()
           .onClick(() => {
-            new DeleteConversationModal(this.app, async () => {
-              this.plugin.settings.conversations =
-                this.plugin.settings.conversations.filter(
-                  (conv) => conv.id !== this.selectedConversation
+            new DeleteConversationModal(
+              this.app,
+              this.selectedConversation,
+              async () => {
+                this.plugin.settings.conversations =
+                  this.plugin.settings.conversations.filter(
+                    (conv) => conv.id !== this.selectedConversation
+                  );
+                this.selectedConversation = "default";
+                await this.plugin.saveSettings();
+                this.display(); // Refresh settings tab
+              },
+              async () => {
+                const index = this.plugin.settings.conversations.findIndex(
+                  (conv) => conv.id === this.selectedConversation
                 );
-              this.selectedConversation = "default";
-              await this.plugin.saveSettings();
-              this.display(); // Refresh settings tab
-            }).open();
+                if (index !== -1) {
+                  this.plugin.settings.conversations[index].lastResponseId =
+                    null;
+                }
+                await this.plugin.saveSettings();
+                this.display(); // Refresh settings tab
+              }
+            ).open();
           })
       )
       .addButton((button) =>

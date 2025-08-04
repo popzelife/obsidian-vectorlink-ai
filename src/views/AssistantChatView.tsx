@@ -1,10 +1,21 @@
 import { useRef, useState, useEffect } from "react";
 import { EditorSelection, Notice } from "obsidian";
-import { Tool } from "openai/resources/responses/responses";
+import {
+  ResponsePrompt,
+  Tool,
+  ToolChoiceOptions,
+} from "openai/resources/responses/responses";
 import TextareaAutosize from "react-textarea-autosize";
 import { EditorSelectionChange } from "obsidian-augment";
 import { useApp } from "../context";
-import { PLUGIN_NAME, CHAT_PROMPT_ID } from "../SettingTab";
+import {
+  PLUGIN_NAME,
+  CHAT_CREATE_PROMPT_ID,
+  CHAT_EDIT_PROMPT_ID,
+  CHAT_WRITE_PROMPT_ID,
+  CHAT_ASK_PROMPT_ID,
+  CHAT_SEARCH_PROMPT_ID,
+} from "../SettingTab";
 import {
   NewConversationModal,
   DeleteConversationModal,
@@ -17,6 +28,32 @@ import {
   FileWithSelection,
 } from "../components";
 import type { ResponseItem } from "../types";
+import { Reasoning, ResponsesModel } from "openai/resources/shared";
+
+enum ModeOption {
+  Create = "create",
+  Edit = "edit",
+  Write = "write",
+  Ask = "ask",
+  Search = "search",
+}
+
+const IconSelectOption = ({ modeOption }: { modeOption: ModeOption }) => {
+  switch (modeOption) {
+    case ModeOption.Create:
+      return <Icon name="sparkles" />;
+    case ModeOption.Edit:
+      return <Icon name="pencil" />;
+    case ModeOption.Write:
+      return <Icon name="book-open-text" />;
+    case ModeOption.Ask:
+      return <Icon name="brain" />;
+    case ModeOption.Search:
+      return <Icon name="file-search" />;
+    default:
+      return null;
+  }
+};
 
 export const AssistantChatView = () => {
   const { plugin, app } = useApp();
@@ -33,6 +70,7 @@ export const AssistantChatView = () => {
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [modeOption, setModeOption] = useState(ModeOption.Create);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Track the latest requested conversation ID to avoid race conditions
   const latestConversationId = useRef<string | null>(null);
@@ -102,7 +140,6 @@ export const AssistantChatView = () => {
 
   const loadHistory = async () => {
     if (!plugin.openaiClient) return;
-    console.info("Loading conversation history...");
 
     // Abort any previous loadHistory in progress
     if (loadHistoryAbortController.current) {
@@ -223,8 +260,14 @@ export const AssistantChatView = () => {
     };
     const lastResponseId = plugin.settings.conversations[index]?.lastResponseId;
     setMessages((prev) => {
-      prev.set(`input-${lastResponseId}`, userMessage);
-      return new Map(prev);
+      const timestamp = Date.now();
+      const newMap = new Map<string, ResponseItem>([
+        // Store the user message with a unique key based on timestamp
+        [`input-${timestamp}`, userMessage],
+        ...prev,
+      ]);
+      // Clear the previous input message if it exists
+      return newMap;
     });
     setInput("");
     setThinking(true);
@@ -248,10 +291,51 @@ export const AssistantChatView = () => {
         content: msg.content,
       }));
 
+      let prompt: ResponsePrompt;
+      let model: ResponsesModel;
+      let reasoning: Reasoning | null;
+      let tool_choice: ToolChoiceOptions;
+      switch (modeOption) {
+        case ModeOption.Create:
+          prompt = CHAT_CREATE_PROMPT_ID;
+          model = "gpt-4.1"; // Use a specific model for creation
+          reasoning = null;
+          tool_choice = "auto"; // Use auto tool choice for creation
+          break;
+        case ModeOption.Edit:
+          prompt = CHAT_EDIT_PROMPT_ID; // Use the same for now
+          model = "gpt-4.1"; // Use a specific model for editing
+          reasoning = null;
+          tool_choice = "auto"; // Use auto tool choice for creation
+          break;
+        case ModeOption.Write:
+          prompt = CHAT_WRITE_PROMPT_ID; // Use the same for now
+          model = "o3"; // Use a specific model for writing
+          reasoning = {
+            effort: "high", // Adjust reasoning effort as needed
+          };
+          tool_choice = "auto"; // Use auto tool choice for creation
+          break;
+        case ModeOption.Search:
+          prompt = CHAT_SEARCH_PROMPT_ID; // Use the same for now
+          model = "gpt-4.1"; // Use a specific model for searching
+          reasoning = null;
+          tool_choice = "required"; // Use auto tool choice for creation
+          break;
+        case ModeOption.Ask:
+        default:
+          prompt = CHAT_ASK_PROMPT_ID; // Use the same for now
+          model = "gpt-4.1"; // Use a specific model for asking
+          reasoning = null; // No reasoning for asking
+          tool_choice = "auto"; // Use auto tool choice for creation
+          break;
+      }
+
       const response = await plugin.openaiClient.responses.create({
-        model: "gpt-4.1",
+        model,
+        reasoning,
         prompt: {
-          ...CHAT_PROMPT_ID,
+          ...prompt,
           variables: {
             user_language: plugin.settings.language,
             general_prompt: plugin.settings.prompt || "",
@@ -260,7 +344,7 @@ export const AssistantChatView = () => {
         },
         input: inputMessages,
         tools,
-        tool_choice: tools.length > 0 ? "required" : undefined,
+        tool_choice,
         include: ["file_search_call.results"],
         stream: false,
         store: true,
@@ -299,13 +383,19 @@ export const AssistantChatView = () => {
       // }
 
       setMessages((prev) => {
-        prev.set(response.id, {
-          role: "assistant",
-          content: assistantMessage,
-          type: "response_item",
-          previous_response_id: response.previous_response_id || null,
-        });
-        return new Map(prev);
+        const newMap = new Map<string, ResponseItem>([
+          [
+            response.id,
+            {
+              role: "assistant",
+              content: assistantMessage,
+              type: "response_item",
+              previous_response_id: response.previous_response_id || null,
+            },
+          ],
+          ...prev,
+        ]);
+        return newMap;
       });
 
       // Update the last response ID in settings
@@ -315,13 +405,19 @@ export const AssistantChatView = () => {
       }
     } catch (err) {
       setMessages((prev) => {
-        prev.set(`error-${lastResponseId}`, {
-          role: "assistant",
-          content: "Error: " + (err?.message || err),
-          type: "response_item",
-          previous_response_id: lastResponseId || null,
-        });
-        return new Map(prev);
+        const newMap = new Map<string, ResponseItem>([
+          [
+            `error-${Date.now()}`,
+            {
+              role: "assistant",
+              content: "Error: " + (err?.message || err),
+              type: "response_item",
+              previous_response_id: lastResponseId || null,
+            },
+          ],
+          ...prev,
+        ]);
+        return newMap;
       });
     } finally {
       setThinking(false);
@@ -374,6 +470,16 @@ export const AssistantChatView = () => {
     }
   };
 
+  const clearConversation = async (id: string) => {
+    const index = plugin.settings.conversations.findIndex((e) => e.id === id);
+    if (index !== -1) {
+      plugin.settings.conversations[index].lastResponseId = null;
+      setMessages(new Map<string, ResponseItem>());
+      plugin.saveSettings();
+      loadHistory();
+    }
+  };
+
   useEffect(() => {
     loadHistory();
   }, []);
@@ -413,11 +519,17 @@ export const AssistantChatView = () => {
         </select>
         <button
           onClick={() => {
-            new DeleteConversationModal(app, () => {
-              deleteConversation(plugin.settings.selectedConversation);
-            }).open();
+            new DeleteConversationModal(
+              app,
+              plugin.settings.selectedConversation,
+              () => {
+                deleteConversation(plugin.settings.selectedConversation);
+              },
+              () => {
+                clearConversation(plugin.settings.selectedConversation);
+              }
+            ).open();
           }}
-          disabled={plugin.settings.selectedConversation === "default"}
           title="Delete Conversation"
           style={{
             padding: "6px 12px",
@@ -605,7 +717,6 @@ export const AssistantChatView = () => {
           placeholder="Message to VectorLink Assistant..."
           maxRows={15}
           style={{
-            flex: 1,
             padding: 8,
             borderRadius: 6,
             border: "1px solid var(--background-modifier-border)",
@@ -622,9 +733,36 @@ export const AssistantChatView = () => {
             gap: 4,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {/* External file upload */}
-            {/* Add external file button */}
+          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <div style={{ position: "relative" }}>
+              <select
+                disabled={thinking}
+                value={modeOption}
+                onChange={(e) => {
+                  setModeOption(e.target.value as ModeOption);
+                }}
+                style={{ paddingLeft: 34, position: "relative" }}
+              >
+                <option value={ModeOption.Create}>Create</option>
+                <option value={ModeOption.Edit}>Edit</option>
+                <option value={ModeOption.Write}>Write</option>
+                <option value={ModeOption.Ask}>Ask</option>
+                <option value={ModeOption.Search}>Search</option>
+              </select>
+              <span
+                style={{
+                  position: "absolute",
+                  left: 7,
+                  top: 3,
+                  pointerEvents: "none",
+                }}
+              >
+                <IconSelectOption modeOption={modeOption} />
+              </span>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
             <button
               type="button"
               style={{
@@ -656,50 +794,10 @@ export const AssistantChatView = () => {
             >
               <Icon name="file-plus" />
             </button>
-
-            {/* Context: Suggest open files */}
-            <select
-              multiple
-              style={{ width: 180, marginTop: 2 }}
-              disabled={thinking}
-              onChange={(e) => {
-                // You can store selected files in a state if needed
-                // Example: setContextFiles([...e.target.selectedOptions].map(o => o.value));
-              }}
-            >
-              {/* {(app.workspace.getLeavesOfType("markdown") || []).map(
-                (leaf, idx) => {
-                  const file = leaf.view.file;
-                  return file ? (
-                    <option key={file.path} value={file.path}>
-                      {file.name}
-                    </option>
-                  ) : null;
-                }
-              )} */}
-            </select>
-
-            {/* Background options */}
-            <select
-              style={{ width: 180, marginTop: 2 }}
-              disabled={thinking}
-              onChange={(e) => {
-                // You can store selected background option in a state if needed
-                // Example: setBackgroundOption(e.target.value);
-              }}
-            >
-              <option value="">Default</option>
-              <option value="long_text">Write very long text</option>
-              <option value="novel">Write a novel according to note</option>
-              <option value="reasoning">Enable more reasoning model</option>
-            </select>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center" }}>
             <button
               type="submit"
               disabled={thinking || !input.trim()}
-              style={{ padding: "8px 16px", borderRadius: 6, height: "100%" }}
+              style={{ padding: "6px 12px", borderRadius: 6 }}
             >
               <Icon name="send" />
             </button>

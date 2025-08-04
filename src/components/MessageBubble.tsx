@@ -1,83 +1,66 @@
 import { useState, useMemo } from "react";
 import { ResponseOutputText } from "openai/resources/responses/responses";
 import { MarkdownDecorator } from "./MarkdownDecorator";
-import { AnnotationHandler } from "./AnnotationHandler";
+// import { AnnotationHandler } from "./AnnotationHandler";
 import { Icon } from "./Icon";
 import { useApp } from "../context";
 import type { ResponseItem, EnrichedChunk } from "../types";
 
-// Helper: enrich text with citations
+// Add footnote for annotations
 const enrichTextWithCitations = (
-  chunk: Extract<EnrichedChunk, { type: "markdown" | "text" }>,
-  annotations: ResponseOutputText.FileCitation[],
-  item: ResponseItem
+  textChunks: EnrichedChunk[],
+  fileCitations: ResponseOutputText.FileCitation[]
 ) => {
-  const chunks: EnrichedChunk[] = [];
-  let relStart = 0; // relative to chunk.value
-  const chunkAbsStart = chunk.indexStart ?? 0;
-  const chunkAbsEnd = chunk.indexEnd ?? chunkAbsStart + chunk.value.length;
+  // Parse text chunks and enrich with citations footnotes
+  // For each text chunk, check if any citation index falls within its range
+  textChunks.forEach((chunk, index) => {
+    const footnotes: string[] = [];
 
-  // Filter annotations that are within this chunk's range
-  const relevantAnnotations = annotations
-    .filter((a) => a.index >= chunkAbsStart && a.index < chunkAbsEnd)
-    .sort((a, b) => a.index - b.index);
+    let chunkText = chunk.value;
+    let offset = 0;
+    fileCitations.forEach((citation) => {
+      // Check if citation index is within this chunk
+      if (
+        citation.index >= chunk.indexStart &&
+        citation.index < chunk.indexEnd
+      ) {
+        // Position in chunk text
+        const pos = citation.index - chunk.indexStart + offset;
+        const footnoteNum = footnotes.length + 1;
+        // Insert footnote marker at citation position
+        chunkText =
+          chunkText.slice(0, pos) + `[^${footnoteNum}]` + chunkText.slice(pos);
+        offset += `[^${footnoteNum}]`.length;
+        // Add footnote entry
+        footnotes.push(
+          `[^${footnoteNum}]: ${citation.filename} - ${citation.index}`
+        );
+      }
+    });
 
-  // let lastAbs = chunkAbsStart;
-  for (let i = 0; i < relevantAnnotations.length; i++) {
-    const a = relevantAnnotations[i];
-    const relIndex = a.index - chunkAbsStart;
-    // Add text before the citation
-    if (relIndex > relStart) {
-      chunks.push({
-        type: "text",
-        value: chunk.value.slice(relStart, relIndex),
-        indexStart: chunkAbsStart + relStart,
-        indexEnd: chunkAbsStart + relIndex,
-      });
-    }
-    // Add the citation chunk
-    chunks.push({
-      type: "citation",
-      citation: a,
-      fileResults: item.file_results, // file_results should be on the annotation
-      index: a.index,
-    });
-    relStart = relIndex;
-    // lastAbs = a.index;
-  }
-  // Add any remaining text after the last citation
-  if (relStart < chunk.value.length) {
-    chunks.push({
-      type: "text",
-      value: chunk.value.slice(relStart),
-      indexStart: chunkAbsStart + relStart,
-      indexEnd: chunkAbsEnd,
-    });
-  }
-  return chunks;
+    // Update chunk text with footnotes
+    chunk.value = chunkText;
+    // Add footnotes at the end of the text chunks
+    chunk.value += footnotes.length > 0 ? `\n\n${footnotes.join("\n")}` : "";
+  });
+
+  return textChunks;
 };
 
 // Helper: extract :::gpt-markdown blocks
-const parseGptMarkdown = (
-  item: ResponseItem,
-  annotations: ResponseOutputText.FileCitation[]
-) => {
+const parseGptMarkdown = (item: ResponseItem) => {
   const regex = /:::gpt-markdown[\r\n]+([\s\S]*?)\n?:::/g;
   let lastIndex = 0;
   const result: EnrichedChunk[] = [];
   let match;
   while ((match = regex.exec(item.content)) !== null) {
     if (match.index > lastIndex) {
-      const textChunk: EnrichedChunk = {
+      result.push({
         type: "text",
         value: item.content.slice(lastIndex, match.index),
         indexStart: lastIndex,
         indexEnd: match.index,
-      };
-
-      const newChunks = enrichTextWithCitations(textChunk, annotations, item);
-
-      result.push(...newChunks);
+      });
     }
     result.push({
       type: "markdown",
@@ -102,7 +85,7 @@ export const MessageBubble = ({ item }: { item: ResponseItem }) => {
   const { app } = useApp();
   const [hover, setHover] = useState(false);
 
-  const annotations = useMemo(() => {
+  const textChunks = useMemo(() => {
     const fileCitations: ResponseOutputText.FileCitation[] = [];
 
     if (item.annotations && Array.isArray(item.annotations)) {
@@ -113,13 +96,13 @@ export const MessageBubble = ({ item }: { item: ResponseItem }) => {
       });
     }
 
-    return [...fileCitations];
-  }, [item.annotations, app.vault]);
+    const textChunks = enrichTextWithCitations(
+      parseGptMarkdown(item),
+      fileCitations
+    );
 
-  const parsed = useMemo(
-    () => parseGptMarkdown(item, annotations),
-    [item.content, annotations]
-  );
+    return textChunks;
+  }, [item.content, item.annotations]);
 
   return (
     <div
@@ -156,16 +139,8 @@ export const MessageBubble = ({ item }: { item: ResponseItem }) => {
               : "var(--color-accent)",
         }}
       >
-        {parsed.map((block, i) => {
+        {textChunks.map((block, i) => {
           switch (block.type) {
-            case "citation":
-              return (
-                <AnnotationHandler
-                  key={i}
-                  annotation={block.citation}
-                  fileResults={block.fileResults}
-                />
-              );
             case "markdown":
               return (
                 <div

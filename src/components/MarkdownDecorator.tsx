@@ -12,6 +12,7 @@ export const MarkdownDecorator = ({
   const { app, plugin } = useApp();
 
   const mdRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (mdRef.current) {
       mdRef.current.empty();

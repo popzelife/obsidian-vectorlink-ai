@@ -6,6 +6,11 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+.vectorai-sync-status {
+  position: absolute;
+  opacity: 0.5;
+  margin: 2.5px;
+}
 
 .file-reference {
   font-size: 12px;

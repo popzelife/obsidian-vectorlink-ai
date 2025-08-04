@@ -7,6 +7,7 @@ import {
   Plugin,
   TFile,
   FileView,
+  getIcon,
 } from "obsidian";
 import OpenAI from "openai";
 import {
@@ -22,6 +23,7 @@ import VectorLinkSettingTab, {
   VectorLinkSettings,
 } from "./src/SettingTab";
 import VectorLinkView, { VIEW_TYPE_VECTOR_LINK } from "./src/View";
+import { FileExplorerView } from "obsidian-typings";
 
 export default class VectorLinkPlugin extends Plugin {
   settings: VectorLinkSettings;
@@ -30,6 +32,77 @@ export default class VectorLinkPlugin extends Plugin {
     this.selectionChangeEvent.bind(this),
     100
   );
+  statusBarItemEl: HTMLElement | null = null;
+  vectorStoreFiles: OpenAI.VectorStores.Files.VectorStoreFile[] = [];
+
+  async listVectorStoreFiles() {
+    if (!this.openaiClient) {
+      new Notice(
+        `${PLUGIN_NAME}\n❌ OpenAI client not configured. Please set your API key in settings.`
+      );
+      return;
+    }
+    if (!this.settings.vectorStoreId) {
+      new Notice(`${PLUGIN_NAME}\nVector Store ID not set in settings.`);
+      return;
+    }
+
+    this.vectorStoreFiles = [];
+    let after: string | undefined = undefined;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const response = await this.openaiClient.vectorStores.files.list(
+        this.settings.vectorStoreId,
+        {
+          limit: 100,
+          filter: "completed",
+          after,
+        }
+      );
+      this.vectorStoreFiles.push(...response.data);
+      if (!response.has_more) break;
+      after = response.data[response.data.length - 1].id;
+    }
+  }
+
+  async updateFileExplorerSyncStatus() {
+    await this.listVectorStoreFiles();
+
+    const leaves = this.app.workspace.getLeavesOfType("file-explorer");
+    if (leaves.length === 0) return;
+    const explorer = leaves[0].view as FileExplorerView;
+
+    this.app.vault.getFiles().forEach((file: TFile) => {
+      // Find the file's DOM element in the explorer
+      const fileItem = explorer.fileItems[file.path];
+      if (fileItem && fileItem.file.extension === "md") {
+        // Is this file synced with VectorLink?
+        const retrievedFile = this.vectorStoreFiles.find(
+          (f) => f.attributes?.name === file.path
+        );
+
+        // Create or update the sync status element
+        let syncEl = fileItem.el.querySelector(".vectorai-sync-status");
+        if (!syncEl) {
+          syncEl = fileItem.el.createDiv({ cls: "vectorai-sync-status" });
+          fileItem.el.insertBefore(syncEl, fileItem.el.children[0]);
+        }
+
+        // Update the sync status text according to the file's sync status
+        if (
+          !retrievedFile ||
+          retrievedFile.attributes?.updated_at !== file.stat.mtime
+        ) {
+          const svg = getIcon("cloud-off")!;
+          syncEl.replaceChildren(svg);
+        } else {
+          const svg = getIcon("cloud")!;
+          syncEl.replaceChildren(svg);
+        }
+      }
+    });
+  }
 
   async createFileInVectorStore(file: TFile): Promise<{
     success: boolean;
@@ -167,9 +240,143 @@ export default class VectorLinkPlugin extends Plugin {
     }
   }
 
+  async syncFilesInVectorStore() {
+    if (!this.statusBarItemEl) {
+      new Notice(`${PLUGIN_NAME}\n❌ Plugin not initialized.`);
+      return;
+    }
+    if (!this.openaiClient) {
+      new Notice(
+        `${PLUGIN_NAME}\n❌ OpenAI client not configured. Please set your API key in settings.`
+      );
+      return;
+    }
+    if (!this.settings.vectorStoreId) {
+      new Notice(`${PLUGIN_NAME}\nVector Store ID not set in settings.`);
+      return;
+    }
+    this.statusBarItemEl.setText("🌌 Syncing ...");
+    new Notice(
+      `${PLUGIN_NAME}\nSyncing all Markdown files with Vector Store...`
+    );
+    try {
+      // 1. List all local Markdown files
+      const vaultFiles = this.app.vault.getFiles();
+      const mdFiles = vaultFiles.filter((f) => f.extension === "md");
+
+      // 2. List all files in the vector store
+      await this.listVectorStoreFiles();
+
+      // 3. For each local file, upload or update as needed
+      const retrievedFiles: Array<{
+        path: string;
+        storeFile: OpenAI.VectorStores.Files.VectorStoreFile;
+      }> = [];
+      for (const file of mdFiles) {
+        const filePath = file.path;
+        const fileStat = await this.app.vault.adapter.stat(filePath);
+        const timestamp = fileStat?.mtime || 0;
+        const retrievedStoreFile = this.vectorStoreFiles.find(
+          (f) => f.attributes && f.attributes.name === filePath
+        );
+        if (!retrievedStoreFile) {
+          // Not in vector store, upload
+          const res = await this.createFileInVectorStore(file);
+          if (!res.success) continue;
+        } else {
+          retrievedFiles.push({
+            path: filePath,
+            storeFile: retrievedStoreFile,
+          });
+          if (
+            retrievedStoreFile.attributes &&
+            retrievedStoreFile.attributes.updated_at !== timestamp
+          ) {
+            // Update file
+            const res1 = await this.createFileInVectorStore(file);
+            if (!res1.success) continue;
+
+            // Delete old file in vector store
+            const res2 = await this.openaiClient.vectorStores.files.delete(
+              retrievedStoreFile.id,
+              {
+                vector_store_id: this.settings.vectorStoreId,
+              }
+            );
+            if (!res2.deleted) {
+              new Notice(
+                `${PLUGIN_NAME}\n❌ Failed to delete file in vector store: ${filePath}`
+              );
+            }
+
+            // Delete old file in OpenAI that was linked to the vector store
+            const res3 = await this.openaiClient.files.delete(
+              retrievedStoreFile.id
+            );
+            if (!res3.deleted) {
+              new Notice(
+                `${PLUGIN_NAME}\n❌ Failed to delete file in OpenAI: ${filePath}`
+              );
+            }
+            new Notice(`${PLUGIN_NAME}\nUpdated file: ${filePath}`);
+          } else {
+            // Already up to date
+          }
+
+          this.statusBarItemEl.setText("🌌 Sync VectorLink");
+        }
+      }
+
+      // 4. Delete files in vector store not present locally
+      for (const storeFile of this.vectorStoreFiles) {
+        const storeFileName = storeFile.attributes?.name;
+        if (
+          storeFileName &&
+          !retrievedFiles.some((f) => f.path === storeFileName)
+        ) {
+          // Delete file from vector store
+          const res1 = await this.openaiClient.vectorStores.files.delete(
+            storeFile.id,
+            {
+              vector_store_id: this.settings.vectorStoreId,
+            }
+          );
+          if (!res1.deleted) {
+            new Notice(
+              `${PLUGIN_NAME}\n❌ Failed to delete file in vector store: ${storeFileName}`
+            );
+            continue;
+          }
+
+          // Delete file from OpenAI that was linked to the vector store
+          const res2 = await this.openaiClient.files.delete(storeFile.id);
+          new Notice(
+            `${PLUGIN_NAME}\nDeleted file from vector store: ${storeFileName}`
+          );
+          if (!res2.deleted) {
+            new Notice(
+              `${PLUGIN_NAME}\n❌ Failed to delete file in OpenAI: ${storeFileName}`
+            );
+          }
+        }
+      }
+      new Notice(`${PLUGIN_NAME}\n✅ Sync complete!`);
+    } catch (err) {
+      new Notice(`${PLUGIN_NAME}\n❌ Sync failed: ${err?.message || err}`);
+      console.error(err);
+    }
+
+    this.updateFileExplorerSyncStatus();
+  }
+
   async onload() {
     await this.loadSettings();
     this.updateOpenAIClient();
+
+    // Only load this function if view is ready
+    this.app.workspace.onLayoutReady(() => {
+      this.updateFileExplorerSyncStatus();
+    });
 
     this.registerView(
       VIEW_TYPE_VECTOR_LINK,
@@ -183,7 +390,7 @@ export default class VectorLinkPlugin extends Plugin {
 
     addIcon(
       "vector-link",
-      `<g stroke="currentColor" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      `<g stroke="currentColor" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round">
   <!-- Constellation points -->
   <circle cx="20" cy="70" r="3" fill="currentColor" />
   <circle cx="50" cy="20" r="3" fill="currentColor" />
@@ -212,146 +419,26 @@ export default class VectorLinkPlugin extends Plugin {
     ribbonIconEl.addClass("my-plugin-ribbon-class");
 
     // This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-    const statusBarItemEl = this.addStatusBarItem();
-    statusBarItemEl.setText("🌌 Sync VectorLink");
-    statusBarItemEl.addClass("mod-clickable");
-    statusBarItemEl.onClickEvent(async () => {
-      if (!this.openaiClient) {
-        new Notice(
-          `${PLUGIN_NAME}\n❌ OpenAI client not configured. Please set your API key in settings.`
-        );
-        return;
-      }
-      if (!this.settings.vectorStoreId) {
-        new Notice(`${PLUGIN_NAME}\nVector Store ID not set in settings.`);
-        return;
-      }
-      statusBarItemEl.setText("🌌 Syncing ...");
-      new Notice(
-        `${PLUGIN_NAME}\nSyncing all Markdown files with Vector Store...`
-      );
-      try {
-        // 1. List all local Markdown files
-        const vaultFiles = this.app.vault.getFiles();
-        const mdFiles = vaultFiles.filter((f) => f.extension === "md");
+    this.statusBarItemEl = this.addStatusBarItem();
+    this.statusBarItemEl.setText("🌌 Sync VectorLink");
+    this.statusBarItemEl.addClass("mod-clickable");
+    this.statusBarItemEl.onClickEvent(this.syncFilesInVectorStore.bind(this));
 
-        // 2. List all files in the vector store
-        const vectorStoreFiles: OpenAI.VectorStores.Files.VectorStoreFile[] =
-          [];
-        let after: string | undefined = undefined;
-
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const response = await this.openaiClient.vectorStores.files.list(
-            this.settings.vectorStoreId,
-            {
-              limit: 100,
-              filter: "completed",
-              after,
-            }
-          );
-          vectorStoreFiles.push(...response.data);
-          if (!response.has_more) break;
-          after = response.data[response.data.length - 1].id;
-        }
-
-        // 3. For each local file, upload or update as needed
-        const retrievedFiles: Array<{
-          path: string;
-          storeFile: OpenAI.VectorStores.Files.VectorStoreFile;
-        }> = [];
-        for (const file of mdFiles) {
-          const filePath = file.path;
-          const fileStat = await this.app.vault.adapter.stat(filePath);
-          const timestamp = fileStat?.mtime || 0;
-          const retrievedStoreFile = vectorStoreFiles.find(
-            (f) => f.attributes && f.attributes.name === filePath
-          );
-          if (!retrievedStoreFile) {
-            // Not in vector store, upload
-            const res = await this.createFileInVectorStore(file);
-            if (!res.success) continue;
-          } else {
-            retrievedFiles.push({
-              path: filePath,
-              storeFile: retrievedStoreFile,
-            });
-            if (
-              retrievedStoreFile.attributes &&
-              retrievedStoreFile.attributes.updated_at !== timestamp
-            ) {
-              // Update file
-              const res1 = await this.createFileInVectorStore(file);
-              if (!res1.success) continue;
-
-              // Delete old file in vector store
-              const res2 = await this.openaiClient.vectorStores.files.delete(
-                retrievedStoreFile.id,
-                {
-                  vector_store_id: this.settings.vectorStoreId,
-                }
-              );
-              if (!res2.deleted) {
-                new Notice(
-                  `${PLUGIN_NAME}\n❌ Failed to delete file in vector store: ${filePath}`
-                );
-              }
-
-              // Delete old file in OpenAI that was linked to the vector store
-              const res3 = await this.openaiClient.files.delete(
-                retrievedStoreFile.id
-              );
-              if (!res3.deleted) {
-                new Notice(
-                  `${PLUGIN_NAME}\n❌ Failed to delete file in OpenAI: ${filePath}`
-                );
-              }
-              new Notice(`${PLUGIN_NAME}\nUpdated file: ${filePath}`);
-            } else {
-              // Already up to date
-            }
-            statusBarItemEl.setText("🌌 Sync VectorLink");
-          }
-        }
-
-        // 4. Delete files in vector store not present locally
-        for (const storeFile of vectorStoreFiles) {
-          const storeFileName = storeFile.attributes?.name;
-          if (
-            storeFileName &&
-            !retrievedFiles.some((f) => f.path === storeFileName)
-          ) {
-            // Delete file from vector store
-            const res1 = await this.openaiClient.vectorStores.files.delete(
-              storeFile.id,
-              {
-                vector_store_id: this.settings.vectorStoreId,
-              }
-            );
-            if (!res1.deleted) {
-              new Notice(
-                `${PLUGIN_NAME}\n❌ Failed to delete file in vector store: ${storeFileName}`
-              );
-              continue;
-            }
-
-            // Delete file from OpenAI that was linked to the vector store
-            const res2 = await this.openaiClient.files.delete(storeFile.id);
-            new Notice(
-              `${PLUGIN_NAME}\nDeleted file from vector store: ${storeFileName}`
-            );
-            if (!res2.deleted) {
-              new Notice(
-                `${PLUGIN_NAME}\n❌ Failed to delete file in OpenAI: ${storeFileName}`
-              );
-            }
-          }
-        }
-        new Notice(`${PLUGIN_NAME}\n✅ Sync complete!`);
-      } catch (err) {
-        new Notice(`${PLUGIN_NAME}\n❌ Sync failed: ${err?.message || err}`);
-        console.error(err);
-      }
+    this.app.vault.on("rename", (file: TFile, oldPath: string) => {
+      // When a file is renamed, we need to update the sync status
+      this.updateFileExplorerSyncStatus();
+    });
+    this.app.vault.on("delete", (file: TFile) => {
+      // When a file is deleted, we need to update the sync status
+      this.updateFileExplorerSyncStatus();
+    });
+    this.app.vault.on("create", (file: TFile) => {
+      // When a file is created, we need to update the sync status
+      this.updateFileExplorerSyncStatus();
+    });
+    this.app.vault.on("modify", (file: TFile) => {
+      // When a file is modified, we need to update the sync status
+      this.updateFileExplorerSyncStatus();
     });
 
     //
@@ -462,6 +549,21 @@ export default class VectorLinkPlugin extends Plugin {
       "selectionchange",
       this.throttleSelectionChangeEvent
     );
+
+    // remove sync from file explore
+    const leaves = this.app.workspace.getLeavesOfType("file-explorer");
+    if (leaves.length === 0) return;
+    const explorer = leaves[0].view as FileExplorerView;
+
+    this.app.vault.getFiles().forEach((file: TFile) => {
+      const fileItem = explorer.fileItems[file.path];
+      if (fileItem && fileItem.file.extension === "md") {
+        const syncEl = fileItem.el.querySelector(".vectorai-sync-status");
+        if (syncEl) {
+          syncEl.remove();
+        }
+      }
+    });
   }
 
   async loadSettings() {

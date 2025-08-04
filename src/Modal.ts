@@ -177,14 +177,23 @@ export class UpdateConversationModal extends Modal {
 }
 
 export class DeleteConversationModal extends Modal {
-  constructor(app: App, onConfirm: () => void, onCancel?: () => void) {
+  constructor(
+    app: App,
+    id: string,
+    onConfirm: () => void,
+    onClear: () => void,
+    onCancel?: () => void
+  ) {
     super(app);
     this.setTitle("Delete Conversation");
 
     this.contentEl.createEl("div", {
       text: "Are you sure you want to delete this conversation? This action cannot be undone.",
-      cls: "delete-conversation-warning",
-      attr: { style: "margin-bottom: 16px; color: var(--text-warning);" },
+      attr: { style: "color: var(--text-warning);" },
+    });
+    this.contentEl.createEl("div", {
+      text: "You can also clear the conversation without deleting it.",
+      attr: { style: "margin-bottom: 16px;" },
     });
 
     const buttonContainer = this.contentEl.createDiv();
@@ -198,10 +207,17 @@ export class DeleteConversationModal extends Modal {
           .setButtonText("Delete")
           .setCta()
           .setWarning()
+          .setDisabled(id === "default")
           .onClick(() => {
             this.close();
             onConfirm();
           })
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Clear").onClick(() => {
+          this.close();
+          if (onClear) onClear();
+        })
       )
       .addButton((btn) =>
         btn.setButtonText("Cancel").onClick(() => {

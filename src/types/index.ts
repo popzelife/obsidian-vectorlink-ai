@@ -19,16 +19,15 @@ export interface ResponseItem {
   file_results?: ResponseFileSearchToolCall.Result[] | null;
 }
 
-export type EnrichedChunk =
-  | {
-      type: "markdown" | "text";
-      value: string;
-      indexStart: number;
-      indexEnd: number;
-    }
-  | {
-      type: "citation";
-      citation: ResponseOutputText.FileCitation;
-      fileResults: ResponseFileSearchToolCall.Result[] | null | undefined;
-      index: number;
-    };
+export type EnrichedChunk = {
+  type: "markdown" | "text";
+  value: string;
+  indexStart: number;
+  indexEnd: number;
+};
+export type CitationChunk = {
+  type: "citation";
+  citation: ResponseOutputText.FileCitation;
+  fileResults: ResponseFileSearchToolCall.Result[] | null | undefined;
+  index: number;
+};
